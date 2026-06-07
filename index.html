@@ -183,6 +183,14 @@ h2.sec{font-size:13px;letter-spacing:2px;color:var(--ink-dim);font-weight:800;te
 .vb{margin-left:auto;font-size:11px;font-weight:800;padding:3px 9px;border-radius:8px;flex:0 0 auto}
 .vb.falta{background:rgba(255,216,77,.2);color:var(--gold)}
 .vb.tem{background:rgba(56,224,138,.16);color:var(--green)}
+.segmode{display:flex;gap:8px;margin:2px 0 12px;background:var(--card);border:1px solid var(--line);border-radius:14px;padding:5px}
+.seg{flex:1;padding:11px 6px;border-radius:10px;border:none;background:transparent;color:var(--ink-dim);font-family:inherit;font-weight:800;font-size:12.5px;cursor:pointer;transition:.2s}
+.seg.on{background:linear-gradient(120deg,var(--mag),#ff6a3d);color:#fff}
+#pageTeamWrap{margin-bottom:12px}
+.teamsel{width:100%;padding:13px 14px;border-radius:13px;border:1px solid var(--line);background:var(--card);color:var(--ink);font-family:inherit;font-size:15px;font-weight:600;outline:none}
+.teamsel:focus{border-color:var(--mag)}
+.cambox.pagemode .camframe{inset:6% 5%;border-style:solid;border-color:rgba(255,216,77,.45)}
+.pagechip{cursor:pointer;border-color:rgba(255,216,77,.5);color:var(--gold)}
 .scanlog{margin-top:16px}
 .scanlog .li{display:flex;align-items:center;gap:10px;padding:8px 12px;border:1px solid var(--line);border-radius:12px;margin-bottom:7px;background:var(--card);font-size:13px;animation:fade .3s both}
 .scanlog .li .fl{font-size:18px}
@@ -288,6 +296,11 @@ nav .badge{position:absolute;top:0;right:18%;background:var(--mag);color:#fff;fo
 
   <!-- ESCANEAR -->
   <section class="view" id="v-scan">
+    <div class="segmode">
+      <button class="seg on" data-mode="page">📄 Página (o que falta)</button>
+      <button class="seg" data-mode="one">🎯 Figurinha (tenho)</button>
+    </div>
+    <div id="pageTeamWrap"><select id="pageTeam" class="teamsel"></select></div>
     <div class="cambox" id="cambox">
       <div class="ph" id="camph">📷<br><br>Aponte para o <b>código</b> da figurinha (ex: BRA7) e toque em <b>Ler código</b>. O app diz na hora se é uma que <b style="color:var(--gold)">FALTA</b>.<br><br><span style="font-size:12px;color:var(--ink-faint)">Dá pra enquadrar vários códigos juntos pra ler de uma vez. O OCR baixa só na 1ª vez (precisa de internet uma vez).</span></div>
       <video id="video" playsinline muted style="display:none"></video>
@@ -608,27 +621,80 @@ function stopCam(){
   document.getElementById('camToggle').textContent='▶ Ligar câmera';
 }
 document.getElementById('camToggle').onclick=()=>{stream?stopCam():startCam();};
+/* modo de leitura */
+let scanMode='page';
+function setCamPh(){
+  const ph=document.getElementById('camph');
+  if(document.getElementById('cambox').classList.contains('live'))return;
+  ph.innerHTML = scanMode==='page'
+   ? `📄<br><br>Escolha a seleção acima, aponte para a <b>página aberta do álbum</b> e toque em <b>Ler página</b>.<br><br><span style="font-size:12px;color:var(--ink-faint)">Os números visíveis (espaços vazios) viram <b style="color:var(--gold)">faltas</b>; o resto é considerado colado. OCR baixa só na 1ª vez.</span>`
+   : `📷<br><br>Aponte para o <b>código</b> da figurinha (ex: BRA7). Diz na hora se <b style="color:var(--gold)">FALTA</b> ou se você já <b style="color:var(--green)">TEM</b>.<br><br><span style="font-size:12px;color:var(--ink-faint)">Dá pra ler vários códigos juntos. OCR baixa só na 1ª vez.</span>`;
+}
+function applyMode(){
+  document.querySelectorAll('.seg').forEach(b=>b.classList.toggle('on',b.dataset.mode===scanMode));
+  document.getElementById('pageTeamWrap').style.display=scanMode==='page'?'':'none';
+  document.getElementById('cambox').classList.toggle('pagemode',scanMode==='page');
+  document.getElementById('capture').textContent=scanMode==='page'?'⦿ Ler página':'⦿ Ler código';
+  document.getElementById('scanResult').classList.remove('show');
+  setCamPh();
+}
+document.querySelectorAll('.seg').forEach(b=>b.onclick=()=>{scanMode=b.dataset.mode;applyMode();});
+
+async function ensureWorker(){ if(!worker){worker=await Tesseract.createWorker('eng');await worker.setParameters({tessedit_char_whitelist:'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789'});} }
+
 document.getElementById('capture').onclick=async()=>{
-  if(busy||!stream)return; busy=true;
-  const btn=document.getElementById('capture'); btn.textContent='Lendo…'; btn.disabled=true;
+  if(busy||!stream)return;
+  if(scanMode==='page'&&!document.getElementById('pageTeam').value){toast('Escolha a seleção da página primeiro');return;}
+  busy=true; const btn=document.getElementById('capture'); const old=btn.textContent; btn.textContent='Lendo…'; btn.disabled=true;
   try{
-    const cv=document.getElementById('canvas'); const w=video.videoWidth,h=video.videoHeight;
-    // recorta a faixa central (onde fica a moldura) p/ focar no código
-    const cw=Math.round(w*0.8),ch=Math.round(h*0.72),cx=Math.round(w*0.1),cy=Math.round(h*0.14);
-    cv.width=cw;cv.height=ch; const ctx=cv.getContext('2d');
-    ctx.drawImage(video,cx,cy,cw,ch,0,0,cw,ch);
-    // realça contraste p/ ajudar OCR
-    const img=ctx.getImageData(0,0,cw,ch),px=img.data;
-    for(let i=0;i<px.length;i+=4){let v=(px[i]*.3+px[i+1]*.59+px[i+2]*.11);v=v<120?0:255;px[i]=px[i+1]=px[i+2]=v;}
-    ctx.putImageData(img,0,0);
-    if(!worker){worker=await Tesseract.createWorker('eng');await worker.setParameters({tessedit_char_whitelist:'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789'});}
-    const {data}=await worker.recognize(cv);
-    const txt=(data.text||'').toUpperCase();
-    const codes=extractCodes(txt);
-    showScan(codes);
-  }catch(e){showScan([]);}
-  busy=false; btn.textContent='⦿ Ler código'; btn.disabled=false;
+    const cv=document.getElementById('canvas'),ctx=cv.getContext('2d'); const w=video.videoWidth,h=video.videoHeight;
+    if(scanMode==='one'){
+      const cw=Math.round(w*0.8),ch=Math.round(h*0.72),cx=Math.round(w*0.1),cy=Math.round(h*0.14);
+      cv.width=cw;cv.height=ch; ctx.drawImage(video,cx,cy,cw,ch,0,0,cw,ch);
+      const img=ctx.getImageData(0,0,cw,ch),px=img.data;
+      for(let i=0;i<px.length;i+=4){let v=(px[i]*.3+px[i+1]*.59+px[i+2]*.11);v=v<120?0:255;px[i]=px[i+1]=px[i+2]=v;}
+      ctx.putImageData(img,0,0);
+      await ensureWorker(); const {data}=await worker.recognize(cv);
+      showScan(extractCodes((data.text||'').toUpperCase()));
+    }else{
+      const scale=Math.min(1,1400/Math.max(w,h)); const cw=Math.round(w*scale),ch=Math.round(h*scale);
+      cv.width=cw;cv.height=ch; ctx.drawImage(video,0,0,cw,ch);
+      const img=ctx.getImageData(0,0,cw,ch),px=img.data;
+      for(let i=0;i<px.length;i+=4){let v=(px[i]*.3+px[i+1]*.59+px[i+2]*.11);px[i]=px[i+1]=px[i+2]=v;}
+      ctx.putImageData(img,0,0);
+      await ensureWorker(); const {data}=await worker.recognize(cv);
+      showPageResult((data.text||'').toUpperCase());
+    }
+  }catch(e){ if(scanMode==='one')showScan([]); else toast('Não consegui ler a página. Tente com mais luz e aproxime.'); }
+  busy=false; btn.textContent=old; btn.disabled=false;
 };
+
+/* leitura da PÁGINA: números lidos = espaços vazios = faltas */
+function extractPageNums(txt,teamCode){
+  const nums=new Set();
+  extractCodes(txt).forEach(c=>{const s=BYCODE[c];if(s&&s.grp===teamCode&&s.n)nums.add(s.n);});
+  (txt.replace(/[^0-9]/g,' ').match(/\d{1,2}/g)||[]).forEach(x=>{const n=parseInt(x,10);if(n>=1&&n<=20)nums.add(n);});
+  return [...nums].sort((a,b)=>a-b);
+}
+let pageState=null;
+function showPageResult(txt){
+  const teamCode=document.getElementById('pageTeam').value;
+  pageState={team:teamCode,miss:new Set(extractPageNums(txt,teamCode))};
+  drawPageReview(); document.getElementById('scanResult').classList.add('show');
+}
+function drawPageReview(){
+  const t=ALBUM.teams.find(x=>x.code===pageState.team);
+  const miss=[...pageState.miss].sort((a,b)=>a-b);
+  const chips=miss.length?miss.map(n=>`<span class="chip pagechip" data-n="${n}">${t.code}${n} ✕</span>`).join('')
+              :'<span class="ocrnote">nenhum número lido — adicione abaixo ou tente de novo</span>';
+  document.getElementById('srBody').innerHTML=
+    `<div class="verdict falta" style="font-size:16px">📄 ${t.flag} ${t.name} · <b>${miss.length}</b> faltando nesta página</div>
+     <div class="codes" style="padding:2px 0 10px">${chips}</div>
+     <div style="display:flex;gap:8px"><input class="codeinput" id="pgAdd" placeholder="+ nº (1–20)" style="font-size:16px;flex:1" inputmode="numeric"><button class="btn sec" id="pgAddBtn" style="flex:0 0 auto;width:auto;padding:0 18px">Add</button></div>
+     <div class="btnrow"><button class="btn gho" data-act="discard">Cancelar</button><button class="btn pri" data-act="applypage">✓ Aplicar página</button></div>
+     <div class="btnrow"><button class="btn sec" data-act="applymiss" style="margin-top:8px">Só registrar as faltas</button></div>
+     <p class="ocrnote">“Aplicar página” marca os números acima como <b style="color:var(--gold)">faltando</b> e <b>o resto da seleção como colado</b>. Confira antes — o OCR de página inteira pode pular algum número.</p>`;
+}
 function extractCodes(txt){
   const out=[],seen=new Set();
   const compact=txt.replace(/[^A-Z0-9]/g,' ');
@@ -669,12 +735,27 @@ function showScan(codes){
 }
 function addCode(code){const wasNew=qty(code)===0;setQty(code,qty(code)+1);refreshCell(code);const s=BYCODE[code];if(s.grp!=='esp')updateTeamHead(s.grp);logScan(code,wasNew);return wasNew;}
 document.getElementById('scanResult').addEventListener('click',e=>{
+  const box=document.getElementById('scanResult');
+  // remover chip de falta (modo página)
+  const chip=e.target.closest('.pagechip'); if(chip&&pageState){pageState.miss.delete(parseInt(chip.dataset.n,10));drawPageReview();return;}
+  if(e.target.id==='pgAddBtn'&&pageState){const inp=document.getElementById('pgAdd');const n=parseInt(inp.value,10);if(n>=1&&n<=20){pageState.miss.add(n);drawPageReview();}else toast('Digite um número de 1 a 20');return;}
   const btn=e.target.closest('[data-act]'); if(!btn)return;
-  const act=btn.dataset.act, box=document.getElementById('scanResult');
+  const act=btn.dataset.act;
   if(act==='discard'){box.classList.remove('show');return;}
   if(act==='addone'){const inp=document.getElementById('srInput');const c=normCode(inp?inp.value:'');if(!c){toast('Código inválido');return;}const nw=addCode(c);box.classList.remove('show');toast((nw?'Adicionada':'Repetida')+': '+c+' ✓');return;}
   if(act==='addmiss'){const codes=[...box.querySelectorAll('.srrow .cd')].map(x=>x.textContent);let n=0;codes.forEach(c=>{if(qty(c)===0){addCode(c);n++;}});box.classList.remove('show');toast(n+' que faltavam adicionadas ✓');return;}
   if(act==='addall'){const codes=[...box.querySelectorAll('.srrow .cd')].map(x=>x.textContent);codes.forEach(addCode);box.classList.remove('show');toast(codes.length+' adicionadas ✓');return;}
+  if((act==='applypage'||act==='applymiss')&&pageState){
+    const t=ALBUM.teams.find(x=>x.code===pageState.team);
+    t.stickers.forEach(s=>{
+      if(pageState.miss.has(s.n)){ if(qty(s.code)!==0){setQty(s.code,0);} refreshCell(s.code); }
+      else if(act==='applypage'&&qty(s.code)===0){ setQty(s.code,1); refreshCell(s.code); }
+    });
+    updateTeamHead(t.code); refreshCounters();
+    box.classList.remove('show');
+    toast(act==='applypage'?`Página de ${t.name} aplicada ✓`:`${pageState.miss.size} falta(s) registrada(s) ✓`);
+    return;
+  }
 });
 document.getElementById('scanResult').addEventListener('input',e=>{
   if(e.target.id!=='srInput')return;
@@ -710,6 +791,8 @@ document.getElementById('mReset').onclick=()=>{
 
 /* ---------- init ---------- */
 function fullRender(){renderEspeciais();renderTeams();refreshCounters();}
+document.getElementById('pageTeam').innerHTML='<option value="">— escolha a seleção da página —</option>'+ALBUM.teams.map(t=>`<option value="${t.code}">${t.flag} ${t.name} (${t.code})</option>`).join('');
+applyMode();
 fullRender();
 </script>
 </body>
