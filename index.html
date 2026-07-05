@@ -216,6 +216,9 @@ textarea.bulk:focus{border-color:var(--mag)}
 .empty{text-align:center;color:var(--ink-faint);padding:50px 20px}
 .empty .em{font-size:46px;display:block;margin-bottom:10px}
 .toolbar{display:flex;gap:8px;margin-bottom:14px;flex-wrap:wrap}
+.exgrid{display:grid;grid-template-columns:1fr 1fr;gap:9px;margin-top:6px}
+.exgrid .full{grid-column:1/-1}
+.expreview{max-height:32vh;overflow:auto;white-space:pre-wrap;background:rgba(0,0,0,.28);border:1px solid var(--line);border-radius:12px;padding:12px;font-size:13px;color:var(--ink);line-height:1.6}
 .pill{padding:9px 14px;border-radius:11px;border:1px solid var(--line);background:var(--card);color:var(--ink-dim);font-size:13px;font-weight:700;cursor:pointer}
 .pill.on{background:var(--mag);color:#fff;border-color:var(--mag)}
 
@@ -327,7 +330,7 @@ nav .badge{position:absolute;top:0;right:18%;background:var(--mag);color:#fff;fo
   <!-- FALTAM -->
   <section class="view" id="v-faltam">
     <div class="toolbar">
-      <button class="btn pri" id="copyAllMissing" style="flex:1">⧉ Copiar tudo que falta</button>
+      <button class="btn pri" id="exportMissing" style="flex:1">📤 Exportar o que falta</button>
     </div>
     <div id="missingList"></div>
   </section>
@@ -335,7 +338,7 @@ nav .badge{position:absolute;top:0;right:18%;background:var(--mag);color:#fff;fo
   <!-- REPETIDAS -->
   <section class="view" id="v-rep">
     <div class="toolbar">
-      <button class="btn pri" id="copyAllDup" style="flex:1">⧉ Copiar lista de troca</button>
+      <button class="btn pri" id="exportDup" style="flex:1">📤 Exportar lista de troca</button>
     </div>
     <div id="dupList"></div>
   </section>
@@ -358,6 +361,19 @@ nav .badge{position:absolute;top:0;right:18%;background:var(--mag);color:#fff;fo
   <button class="btn gho" id="mReset" style="color:var(--red)">🗑 Zerar coleção</button>
   <button class="btn gho" id="mClose">Fechar</button>
   <p class="disclaimer">Álbum oficial Panini FIFA World Cup 2026 — 980 figurinhas (48 seleções + abertura + Museu FIFA). App pessoal, sem fins comerciais.</p>
+</div></div>
+
+<div class="modal" id="exportModal"><div class="sheet">
+  <h3 id="exTitle">Exportar</h3>
+  <p class="expreview" id="exPreview"></p>
+  <div class="exgrid">
+    <button class="btn pri full" id="exShare">📲 Compartilhar…</button>
+    <button class="btn sec" id="exWhats">💬 WhatsApp</button>
+    <button class="btn sec" id="exMail">✉️ E-mail</button>
+    <button class="btn sec" id="exCopy">⧉ Copiar</button>
+    <button class="btn sec" id="exTxt">⬇ Baixar .txt</button>
+  </div>
+  <button class="btn gho" id="exClose" style="margin-top:10px">Fechar</button>
 </div></div>
 
 <div class="toast" id="toast"></div>
@@ -506,12 +522,13 @@ function renderMissing(){
   const wrap=document.getElementById('missingList'); let html='';
   function block(flag,name,arr){
     if(arr.length===0)return '';
-    const chips=arr.map(s=>`<span class="chip ${s.foil?'foil':''}">${s.code}</span>`).join('');
-    const codes=arr.map(s=>s.code).join(', ');
+    const chips=arr.map(s=>`<span class="chip ${s.foil?'foil':''}">${s.n!=null?s.n:s.code}</span>`).join('');
+    const parts=arr.map(s=>s.n!=null?s.n:s.code).join(', ');
+    const line=`${flag} ${name}: ${parts}`;
     return `<div class="listcard card">
       <div class="listhead"><div class="fl">${flag}</div><div class="nm">${name}</div><div class="cnt">${arr.length}</div></div>
       <div class="codes">${chips}</div>
-      <button class="btn sec copybtn" data-copy="${codes}">⧉ Copiar ${name}</button></div>`;
+      <button class="btn sec copybtn" data-copy="${line}">⧉ Copiar ${name}</button></div>`;
   }
   const espMiss=ALL.filter(s=>s.grp==='esp'&&qty(s.code)===0);
   html+=block('✦','Especiais',espMiss);
@@ -532,7 +549,7 @@ function renderDup(){
   let allCodes=[];
   Object.keys(bySec).forEach(team=>{
     const g=bySec[team];
-    const chips=g.items.map(s=>{const ex=qty(s.code)-1;allCodes.push(...Array(ex).fill(s.code));return `<span class="chip cyan">${s.code}${ex>1?' ×'+ex:''}</span>`;}).join('');
+    const chips=g.items.map(s=>{const ex=qty(s.code)-1;allCodes.push(...Array(ex).fill(s.code));return `<span class="chip cyan">${s.n!=null?s.n:s.code}${ex>1?'×'+ex:''}</span>`;}).join('');
     html+=`<div class="listcard card"><div class="listhead"><div class="fl">${g.flag}</div><div class="nm">${team}</div><div class="cnt" style="color:var(--cyan)">${g.items.length}</div></div><div class="codes">${chips}</div></div>`;
   });
   wrap.innerHTML=html;
@@ -560,15 +577,44 @@ function go(name){
   if(name==='rep')renderDup();
   if(name!=='scan')stopCam();
 }
-document.getElementById('copyAllMissing').onclick=()=>{
-  const codes=ALL.filter(s=>qty(s.code)===0).map(s=>s.code);
-  if(codes.length===0)return toast('Nada faltando 🎉');
-  copy(codes.join(', '));
+/* ---------- EXPORT (uma linha por país: bandeira + só o número) ---------- */
+let exportText='';
+function fmtMissing(){
+  const lines=[];
+  const esp=ALL.filter(s=>s.grp==='esp'&&qty(s.code)===0).map(s=>s.code);
+  if(esp.length)lines.push('✦ Especiais: '+esp.join(', '));
+  ALBUM.teams.forEach(t=>{const ns=t.stickers.filter(s=>qty(s.code)===0).map(s=>s.n);if(ns.length)lines.push(`${t.flag} ${t.name}: ${ns.join(', ')}`);});
+  if(!lines.length)return null;
+  return `Faltam no meu álbum Copa 2026 (${TOTAL-distinctOwned()}):\n\n`+lines.join('\n');
+}
+function fmtDup(){
+  const lines=[];
+  const esp=ALL.filter(s=>s.grp==='esp'&&qty(s.code)>=2);
+  if(esp.length)lines.push('✦ Especiais: '+esp.map(s=>{const e=qty(s.code)-1;return s.code+(e>1?'×'+e:'');}).join(', '));
+  ALBUM.teams.forEach(t=>{const items=t.stickers.filter(s=>qty(s.code)>=2);if(items.length)lines.push(`${t.flag} ${t.name}: `+items.map(s=>{const e=qty(s.code)-1;return s.n+(e>1?'×'+e:'');}).join(', '));});
+  if(!lines.length)return null;
+  return `Repetidas p/ troca — Copa 2026 (${totalDup()}):\n\n`+lines.join('\n');
+}
+function openExport(title,text){
+  if(!text){toast('Nada para exportar 🎉');return;}
+  exportText=text;
+  document.getElementById('exTitle').textContent=title;
+  document.getElementById('exPreview').textContent=text;
+  document.getElementById('exportModal').classList.add('show');
+}
+document.getElementById('exportMissing').onclick=()=>openExport('O que falta',fmtMissing());
+document.getElementById('exportDup').onclick=()=>openExport('Lista de troca',fmtDup());
+const exModal=document.getElementById('exportModal');
+document.getElementById('exClose').onclick=()=>exModal.classList.remove('show');
+exModal.onclick=e=>{if(e.target===exModal)exModal.classList.remove('show');};
+document.getElementById('exShare').onclick=async()=>{
+  if(navigator.share){try{await navigator.share({text:exportText});}catch(e){}}
+  else{copy(exportText);toast('Compartilhamento indisponível — texto copiado');}
 };
-document.getElementById('copyAllDup').onclick=()=>{
-  const wrap=document.getElementById('dupList'); if(!wrap._all)return toast('Sem repetidas');
-  copy(wrap._all);
-};
+document.getElementById('exWhats').onclick=()=>{window.open('https://wa.me/?text='+encodeURIComponent(exportText),'_blank');};
+document.getElementById('exMail').onclick=()=>{location.href='mailto:?subject='+encodeURIComponent('Álbum Copa 2026')+'&body='+encodeURIComponent(exportText);};
+document.getElementById('exCopy').onclick=()=>copy(exportText);
+document.getElementById('exTxt').onclick=()=>{const blob=new Blob([exportText],{type:'text/plain'});const a=document.createElement('a');a.href=URL.createObjectURL(blob);a.download='copa2026.txt';a.click();toast('Arquivo baixado ✓');};
 
 /* ---------- BULK ---------- */
 document.getElementById('bulkAdd').onclick=()=>{
